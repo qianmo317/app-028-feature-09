@@ -16,7 +16,14 @@ import {
   photoVersion,
 } from '../store'
 import { comparePapers, computeCost } from '../logic/cost'
-import { findPhotoSize, groupsFromTask, resolvePaper, sizeLabel } from '../logic/library'
+import {
+  findPhotoSize,
+  groupsFromTask,
+  resolvePaper,
+  sizeLabel,
+  splitDistributionText,
+  splitGroupsOf,
+} from '../logic/library'
 import { formatCents, formatPercent } from '../logic/units'
 import type { PaperCompare } from '../logic/cost'
 import type { Placement, Task } from '../logic/types'
@@ -39,6 +46,22 @@ const totalPhotos = computed(() =>
 )
 const totalSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.cutSteps.length, 0))
 const rawSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.rawCutCount, 0))
+
+/** 「不拆散」却被分到多张相纸的尺寸（从当前生效版面实时推导，手工微调后同样准确） */
+const splitInfos = computed(() => {
+  const t = task.value
+  if (!t) return []
+  return splitGroupsOf(t, sheets.value).map((sg) => {
+    const item = t.items.find((i) => i.id === sg.itemId)
+    const size = item ? findPhotoSize(allSizes.value, item.sizeId) : undefined
+    return { ...sg, label: sizeLabel(size), distText: splitDistributionText(sg) }
+  })
+})
+const splitItemIds = computed(() => new Set(splitInfos.value.map((s) => s.itemId)))
+const isSplitItem = (itemId: string) => splitItemIds.value.has(itemId)
+const hasKeepTogether = computed(
+  () => !!task.value && task.value.items.some((i) => i.keepTogether && i.qty > 1),
+)
 
 const thumbs = computed(() => {
   void photoVersion.value
@@ -85,6 +108,7 @@ function runCompare() {
       gapMm: t.gapMm,
       kerfMm: t.kerfMm,
       allowRotate: t.allowRotate,
+      strictKeepTogether: t.strictKeepTogether ?? false,
     },
     allPapers.value.filter((x) => x.id !== 'proll152'),
     t.paperId,
@@ -276,12 +300,22 @@ watch(
       <span class="badge">{{ totalPhotos }} 张照片</span>
       <span class="badge">{{ sheets.length }} 张相纸</span>
       <span class="badge">{{ totalSteps }} 刀（未合并 {{ rawSteps }} 刀）</span>
+      <span v-if="splitInfos.length" class="badge danger">
+        {{ splitInfos.length }} 种尺寸被拆散
+      </span>
       <div class="spacer"></div>
       <button class="btn" @click="goto('cut')">裁切步骤 →</button>
       <button class="btn primary" @click="goto('export')">导出 1:1 →</button>
     </div>
 
     <div v-if="localMsg" class="note">{{ localMsg }}</div>
+    <div v-if="splitInfos.length" class="note danger">
+      <strong>「不拆散」没守住：</strong>以下 {{ splitInfos.length }} 种尺寸被分到了多张相纸上 ——
+      <template v-for="(sg, i) in splitInfos" :key="sg.itemId">
+        {{ i ? '；' : '' }}{{ sg.label }} 共 {{ sg.total }} 张，分在 {{ sg.distText }}
+      </template>
+      。纸面上这些照片以红色虚线框标出；如需一张都不许拆，请在新建任务时勾选「强硬模式」。
+    </div>
     <div
       v-if="manual"
       class="note"
@@ -321,6 +355,7 @@ watch(
               draggable
               :show-cut-labels="true"
               :thumb-of="thumbs"
+              :split-of="isSplitItem"
               @move="onMove"
               @moveend="onMoveEnd"
               @select="(seq) => (selectedSeq = seq)"
@@ -330,6 +365,7 @@ watch(
             <span><i style="background: #9aa6b4"></i>切割线</span>
             <span><i style="background: #6d7c8f"></i>照片边界</span>
             <span><i style="background: #c3ccd9"></i>安全边</span>
+            <span v-if="splitInfos.length"><i class="legend-split"></i>被拆散的照片</span>
             <span>↻ = 已旋转 90°</span>
           </div>
         </div>
@@ -344,6 +380,7 @@ watch(
                 <th class="num">位置 x/y mm</th>
                 <th class="num">宽×高 mm</th>
                 <th>旋转</th>
+                <th>不拆散</th>
               </tr>
             </thead>
             <tbody>
@@ -362,6 +399,16 @@ watch(
                 <td class="num">{{ p.x.toFixed(1) }} / {{ p.y.toFixed(1) }}</td>
                 <td class="num">{{ p.w.toFixed(1) }}×{{ p.h.toFixed(1) }}</td>
                 <td>{{ p.rotated ? '90°' : '—' }}</td>
+                <td>
+                  <span
+                    v-if="splitItemIds.has(p.itemId)"
+                    class="badge danger"
+                    :title="`该尺寸被分在 ${splitInfos.find((s) => s.itemId === p.itemId)?.distText ?? ''}`"
+                  >
+                    拆散
+                  </span>
+                  <span v-else>—</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -390,6 +437,38 @@ watch(
             <dt>切割步数（未合并）</dt>
             <dd>{{ rawSteps }}</dd>
           </div>
+        </div>
+
+        <div v-if="hasKeepTogether" class="card">
+          <h3>
+            不拆散核对
+            <span v-if="splitInfos.length" class="badge danger">{{ splitInfos.length }} 种被拆散</span>
+            <span v-else class="badge ok">全部集中</span>
+          </h3>
+          <div v-if="!splitInfos.length" class="note ok">
+            所有勾选「不拆散」的尺寸都排在同一张相纸上
+          </div>
+          <template v-else>
+            <div class="note danger">
+              以下尺寸勾了「不拆散」却被分到多张相纸；勾「强硬模式」可在排样前直接拦下
+            </div>
+            <table class="data" style="margin-top: 8px">
+              <thead>
+                <tr>
+                  <th>尺寸</th>
+                  <th class="num">总张数</th>
+                  <th>被分到的相纸</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="sg in splitInfos" :key="sg.itemId">
+                  <td>{{ sg.label }}</td>
+                  <td class="num">{{ sg.total }}</td>
+                  <td>{{ sg.distText }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
         </div>
 
         <div v-if="lowUtil" class="card">

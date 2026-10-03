@@ -1,6 +1,14 @@
 /** 导出 CSV（带 BOM，Excel 直接打开不乱码） */
 import type { Paper, Sheet, Task } from './types'
 
+/** 「不拆散」被拆散的导出信息（由调用方从当前版面推导） */
+export interface SplitExportInfo {
+  /** 每种被拆散尺寸一行人读文本，如「6 寸 102×152mm：共 5 张，分在 第1张×4、第2张×1」 */
+  lines: string[]
+  /** 被拆散的 itemId 集合（用于逐张照片标注） */
+  itemIds: Set<string>
+}
+
 export function toCsv(rows: Array<Array<string | number>>): string {
   return rows
     .map((r) =>
@@ -23,6 +31,7 @@ export function cutListRows(
   paper: Paper,
   sheets: Sheet[],
   sizeLabelOf: (seq: number) => string,
+  split: SplitExportInfo,
 ): Array<Array<string | number>> {
   const rows: Array<Array<string | number>> = [
     ['相纸', `${paper.name} ${paper.wMm}x${paper.hMm}mm`],
@@ -30,9 +39,13 @@ export function cutListRows(
     ['刀宽补偿 mm', task.kerfMm],
     ['安全边 mm', task.safeEdgeMm],
     ['相纸张数', sheets.length],
+    ['不拆散被拆散', split.lines.length ? `${split.lines.length} 种尺寸` : '无'],
+  ]
+  for (const line of split.lines) rows.push(['被拆散明细', line])
+  rows.push(
     [],
     ['相纸序号', '刀序', '方向', '坐标 mm', '起点 mm', '终点 mm', '长度 mm', '是否共边合并'],
-  ]
+  )
   for (const s of sheets) {
     s.cutSteps.forEach((c, i) => {
       rows.push([
@@ -48,7 +61,7 @@ export function cutListRows(
     })
     rows.push([])
   }
-  rows.push(['照片编号', '所在相纸', '尺寸', 'x mm', 'y mm', '宽 mm', '高 mm', '旋转'])
+  rows.push(['照片编号', '所在相纸', '尺寸', 'x mm', 'y mm', '宽 mm', '高 mm', '旋转', '不拆散被拆散'])
   for (const s of sheets) {
     for (const p of s.placements) {
       rows.push([
@@ -60,6 +73,7 @@ export function cutListRows(
         Math.round(p.w * 100) / 100,
         Math.round(p.h * 100) / 100,
         p.rotated ? '90°' : '无',
+        split.itemIds.has(p.itemId) ? '是' : '否',
       ])
     }
   }

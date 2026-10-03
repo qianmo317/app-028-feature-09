@@ -84,12 +84,22 @@ export interface WasteRect {
   h: number
 }
 
+/** 「不拆散」却被拆散的尺寸分布明细 */
+export interface SplitGroupInfo {
+  itemId: string
+  /** 该尺寸实际排下的总张数 */
+  total: number
+  /** 各被分到了哪几张纸（sheetIndex 为 0 基） */
+  perSheet: Array<{ sheetIndex: number; count: number }>
+}
+
 export interface PackStats {
   totalPhotos: number
   sheets: number
   avgUtilization: number
   elapsedMs: number
-  keepTogetherBroken: string[]
+  /** 勾了「不拆散」却被分到多张相纸的尺寸及其分布 */
+  keepTogetherBroken: SplitGroupInfo[]
 }
 
 export interface PackResult {
@@ -122,6 +132,8 @@ export interface Task {
   kerfMm: number
   safeEdgeMm: number
   allowRotate: boolean
+  /** 强硬模式：勾选后「不拆散」的尺寸一张都不许拆，排不下直接报错并建议换纸 */
+  strictKeepTogether?: boolean
   headerText: string
   footerText: string
   createdAt: number
@@ -152,6 +164,8 @@ export interface Settings {
   kerfMm: number
   safeEdgeMm: number
   allowRotate: boolean
+  /** 新建任务时「强硬模式」的默认值 */
+  strictKeepTogether: boolean
   exportDpi: number
 }
 

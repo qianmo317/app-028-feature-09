@@ -482,6 +482,82 @@ function assertPerformance(): AssertionResult {
   }
 }
 
+/** ⑧ 不拆散：拆散记录分布明细；强硬模式排不下直接报错（尺寸 + 缺口 + 换纸建议） */
+function assertKeepTogether(): AssertionResult {
+  const t0 = performance.now()
+  const problems: string[] = []
+  const opts: PackOptions = {
+    paperW: 100,
+    paperH: 100,
+    marginMm: 0,
+    safeEdgeMm: 0,
+    gapMm: 0,
+    kerfMm: 0,
+    allowRotate: false,
+  }
+  // 40×40 的照片在 100×100 的纸上一张最多排 4 张
+  const group = {
+    itemId: 'a',
+    copies: 5,
+    photoW: 40,
+    photoH: 40,
+    allowRotate: false,
+    keepTogether: true,
+    label: '测试尺寸',
+  }
+  // 非强硬：5 张会被拆成 4 + 1，统计里必须带出分布明细
+  const soft = pack([{ ...group }], opts)
+  if (soft.error) problems.push(`非强硬模式不应报错：${soft.error}`)
+  const hit = soft.result.stats.keepTogetherBroken.find((b) => b.itemId === 'a')
+  if (!hit) {
+    problems.push('5 张 40×40 排进 100×100 应被判定为拆散')
+  } else {
+    if (hit.total !== 5) problems.push(`拆散统计总张数应为 5，实际 ${hit.total}`)
+    const counts = hit.perSheet.map((x) => x.count).sort((a, b) => a - b)
+    if (hit.perSheet.length !== 2 || counts[0] !== 1 || counts[1] !== 4) {
+      problems.push(`拆散分布应为 4+1，实际 ${JSON.stringify(hit.perSheet)}`)
+    }
+  }
+  // 强硬：同样的输入必须直接报错，说清哪种尺寸、还差多少，并建议换纸
+  const strict = pack([{ ...group }], { ...opts, strictKeepTogether: true })
+  if (!strict.error) {
+    problems.push('强硬模式下 5 张 40×40 排不进 100×100 应报错')
+  } else {
+    if (!strict.error.includes('测试尺寸')) problems.push(`报错应说清是哪种尺寸：${strict.error}`)
+    if (!strict.error.includes('还差 1 张')) problems.push(`报错应说明还差 1 张：${strict.error}`)
+    if (!strict.error.includes('换更大的相纸')) problems.push(`报错应建议换纸：${strict.error}`)
+  }
+  if (strict.result.sheets.length !== 0) problems.push('强硬模式报错时不应产出任何版面')
+  // 强硬 + 整组都能排下：4 张 40×40 + 3 张 25×25 → 各据一张纸，谁都不许被拆
+  const ok = pack(
+    [
+      { itemId: 'a', copies: 4, photoW: 40, photoH: 40, allowRotate: false, keepTogether: true },
+      { itemId: 'b', copies: 3, photoW: 25, photoH: 25, allowRotate: false, keepTogether: true },
+    ],
+    { ...opts, strictKeepTogether: true },
+  )
+  if (ok.error) problems.push(`整组能排下时不应报错：${ok.error}`)
+  if (ok.result.stats.keepTogetherBroken.length) problems.push('强硬模式下不应出现任何拆散')
+  if (ok.result.stats.totalPhotos !== 7) {
+    problems.push(`应排下 7 张，实际 ${ok.result.stats.totalPhotos}`)
+  }
+  for (const s of ok.result.sheets) {
+    const ca = s.placements.filter((p) => p.itemId === 'a').length
+    const cb = s.placements.filter((p) => p.itemId === 'b').length
+    if (ca > 0 && ca !== 4) problems.push(`a 组在第 ${s.index + 1} 张纸上只有 ${ca} 张（应整组 4 张）`)
+    if (cb > 0 && cb !== 3) problems.push(`b 组在第 ${s.index + 1} 张纸上只有 ${cb} 张（应整组 3 张）`)
+  }
+  return {
+    id: 'keeptogether',
+    title: '⑧ 不拆散：拆散记录分布明细；强硬模式排不下直接报错（尺寸 + 缺口 + 换纸建议）',
+    pass: problems.length === 0,
+    detail: problems.length
+      ? problems.join('；')
+      : '非强硬模式 5 张 40×40 → 拆成 4+1 并记录分布明细；同一输入开强硬模式直接报错（「测试尺寸」还差 1 张，建议换更大的相纸）；4+3 整组可排下时 2 张纸均无拆散',
+    ms: Math.round(performance.now() - t0),
+  }
+}
+
 export async function runSelfTest(): Promise<AssertionResult[]> {
   const results: AssertionResult[] = []
   results.push(assertGuillotine())
@@ -489,6 +565,7 @@ export async function runSelfTest(): Promise<AssertionResult[]> {
   results.push(assertSafeEdgeAndKerf())
   results.push(assertUnits())
   results.push(assertCoEdgeMerge())
+  results.push(assertKeepTogether())
   try {
     results.push(await assertExport1to1())
   } catch (e) {

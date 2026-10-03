@@ -31,6 +31,8 @@ export interface PdfBuildInput {
   sheets: Sheet[]
   photoOf: (p: Placement) => PdfPhotoRef | undefined
   sizeLabelOf: (p: Placement) => string
+  /** 「不拆散」被拆散的尺寸明细（每种一行），无拆散时传空数组 */
+  splitLines?: string[]
   maxPhotos?: number
   onProgress?: (msg: string) => void
 }
@@ -213,6 +215,13 @@ async function buildInfoPage(input: PdfBuildInput): Promise<PageSpec> {
   lines.push(
     `隙距 ${input.task.gapMm}mm｜刀宽补偿 ${input.task.kerfMm}mm｜安全边 ${input.task.safeEdgeMm}mm｜共 ${input.sheets.length} 张相纸`,
   )
+  const splitLines = input.splitLines ?? []
+  if (splitLines.length) {
+    lines.push(`不拆散被拆散：${splitLines.length} 种尺寸`)
+    for (const l of splitLines) lines.push(`  ${l}`)
+  } else {
+    lines.push('不拆散被拆散：无')
+  }
   lines.push('')
   for (const s of input.sheets) {
     lines.push(`【第 ${s.index + 1} 张】共 ${s.cutSteps.length} 刀（未合并 ${s.rawCutCount} 刀）`)

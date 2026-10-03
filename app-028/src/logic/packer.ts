@@ -5,7 +5,7 @@
  */
 import { EPS, planSheetCuts, toCutSteps, type Rect } from './guillotine'
 import { round } from './units'
-import type { PackResult, PackStats, Placement, Sheet, WasteRect } from './types'
+import type { PackResult, PackStats, Placement, Sheet, SplitGroupInfo, WasteRect } from './types'
 
 export interface PackGroup {
   itemId: string
@@ -14,6 +14,8 @@ export interface PackGroup {
   photoH: number
   allowRotate: boolean
   keepTogether: boolean
+  /** 尺寸名称（用于报错与提示，如「6 寸」） */
+  label?: string
 }
 
 export interface PackOptions {
@@ -24,6 +26,8 @@ export interface PackOptions {
   gapMm: number
   kerfMm: number
   allowRotate: boolean
+  /** 强硬模式：「不拆散」的组一张都不许拆，整组排不下一张纸就直接报错 */
+  strictKeepTogether?: boolean
 }
 
 export interface PackOutput {
@@ -240,6 +244,24 @@ function tryPlaceMany(
   return out
 }
 
+/** 按当前排样策略，一整张空纸最多能排下该组多少张 */
+function maxFitOnEmptySheet(region: Rect, g: PackGroup, opts: PackOptions, m: number): number {
+  let free: Rect[] = [{ ...region }]
+  let n = 0
+  while (n < g.copies) {
+    const t = tryPlaceOne(free, g, opts, m)
+    if (!t) break
+    free = t.free
+    n++
+  }
+  return n
+}
+
+function groupLabel(g: PackGroup): string {
+  const dim = `${round(g.photoW, 1)}×${round(g.photoH, 1)}mm`
+  return g.label ? `「${g.label}」${dim}` : dim
+}
+
 export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
   const started = performance.now()
   const region = usableRegion(opts)
@@ -272,7 +294,7 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
       (canRot && sh <= region.w + EPS && sw <= region.h + EPS)
     if (!ok) {
       oversize.push(
-        `${round(g.photoW, 1)}×${round(g.photoH, 1)}mm 放不进可用区 ${round(region.w, 1)}×${round(region.h, 1)}mm`,
+        `${groupLabel(g)} 放不进可用区 ${round(region.w, 1)}×${round(region.h, 1)}mm`,
       )
     }
   }
@@ -282,6 +304,35 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
       result: emptyResult(performance.now() - started),
     }
   }
+
+  // 强硬模式：「不拆散」的组必须能整组排进一张空纸，否则直接报错，绝不悄悄拆到多张纸
+  if (opts.strictKeepTogether) {
+    const problems: string[] = []
+    for (const g of queue) {
+      if (!g.keepTogether || g.copies <= 1) continue
+      const fit = maxFitOnEmptySheet(region, g, opts, m)
+      if (fit < g.copies) {
+        problems.push(
+          `${groupLabel(g)} 共 ${g.copies} 张要求不拆散，但一张相纸最多排 ${fit} 张，还差 ${g.copies - fit} 张放不下`,
+        )
+      }
+    }
+    if (problems.length) {
+      return {
+        error:
+          problems.join('；') +
+          '。建议换更大的相纸（或调小安全边/刀宽补偿/间距后再试）；也可以取消该尺寸的「不拆散」，或关闭强硬模式',
+        result: emptyResult(performance.now() - started),
+      }
+    }
+  }
+
+  // 强硬模式下这些组只允许整组放置，单张循环必须跳过
+  const strictGroups = new Set(
+    opts.strictKeepTogether
+      ? queue.filter((g) => g.keepTogether && g.copies > 1).map((g) => g.itemId)
+      : [],
+  )
 
   const rawSheets: Array<{ placements: PlacedRaw[] }> = []
   let guard = 0
@@ -319,6 +370,7 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
       }
       for (const g of queue) {
         if (g.copies <= 0) continue
+        if (strictGroups.has(g.itemId)) continue
         let t = tryPlaceOne(free, g, opts, m)
         while (t) {
           commit(t, g)
@@ -339,7 +391,7 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
   // 组装：按「从上到下、从左到右」编号
   const rawPlacements: Placement[] = []
   let seq = 0
-  const sheetOfItem = new Map<string, Set<number>>()
+  const sheetOfItem = new Map<string, Map<number, number>>()
   for (let s = 0; s < rawSheets.length; s++) {
     const raw = rawSheets[s]
     const ordered = raw.placements
@@ -360,22 +412,30 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
         rotated: p.rotated,
         seq,
       })
-      let set = sheetOfItem.get(p.itemId)
-      if (!set) {
-        set = new Set()
-        sheetOfItem.set(p.itemId, set)
+      let map = sheetOfItem.get(p.itemId)
+      if (!map) {
+        map = new Map()
+        sheetOfItem.set(p.itemId, map)
       }
-      set.add(s)
+      map.set(s, (map.get(s) ?? 0) + 1)
     }
   }
 
   const { sheets } = sheetsFromPlacements(rawPlacements, opts, rawSheets.length)
 
-  const keepTogetherBroken: string[] = []
+  const keepTogetherBroken: SplitGroupInfo[] = []
   for (const g of groups) {
     if (!g.keepTogether || g.copies <= 1) continue
-    const set = sheetOfItem.get(g.itemId)
-    if (set && set.size > 1) keepTogetherBroken.push(g.itemId)
+    const map = sheetOfItem.get(g.itemId)
+    if (!map || map.size <= 1) continue
+    const perSheet = [...map.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([sheetIndex, count]) => ({ sheetIndex, count }))
+    keepTogetherBroken.push({
+      itemId: g.itemId,
+      total: perSheet.reduce((acc, x) => acc + x.count, 0),
+      perSheet,
+    })
   }
 
   const totalPhotos = sheets.reduce((acc, s) => acc + s.placements.length, 0)

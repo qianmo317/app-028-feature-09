@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   kerfMm: 0.5,
   safeEdgeMm: 3,
   allowRotate: true,
+  strictKeepTogether: false,
   exportDpi: 300,
 }
 
@@ -129,6 +130,7 @@ export function createTask(partial: Partial<Task> = {}): Task {
     kerfMm: partial.kerfMm ?? settings.value.kerfMm,
     safeEdgeMm: partial.safeEdgeMm ?? settings.value.safeEdgeMm,
     allowRotate: partial.allowRotate ?? settings.value.allowRotate,
+    strictKeepTogether: partial.strictKeepTogether ?? settings.value.strictKeepTogether,
     headerText: partial.headerText ?? '',
     footerText: partial.footerText ?? '',
     createdAt: Date.now(),

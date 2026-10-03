@@ -22,6 +22,8 @@ const props = withDefaults(
     footerText?: string
     thumbOf?: (p: Placement) => string | undefined
     labelOf?: (itemId: string) => string
+    /** 返回 true 时该照片以红色虚线框标出（用于「不拆散」被拆散的尺寸） */
+    splitOf?: (itemId: string) => boolean
   }>(),
   {
     safeEdgeMm: 3,
@@ -40,6 +42,7 @@ const props = withDefaults(
     footerText: '',
     thumbOf: undefined,
     labelOf: undefined,
+    splitOf: undefined,
   },
 )
 
@@ -213,7 +216,7 @@ const showDetail = computed(() => props.scale >= 1.6 || props.unit === 'mm')
       v-for="p in sheet.placements"
       :key="p.seq"
       class="ph"
-      :class="{ draggable, invalid, dragging: dragSeq === p.seq }"
+      :class="{ draggable, invalid, dragging: dragSeq === p.seq, split: splitOf?.(p.itemId) }"
       :style="phStyle(p)"
       @pointerdown="onPointerDown($event, p)"
       @pointermove="onPointerMove"

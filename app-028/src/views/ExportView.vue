@@ -15,7 +15,7 @@ import {
 import { computeCost } from '../logic/cost'
 import { cutListRows, csvBlob } from '../logic/csv'
 import { downloadBlob } from '../logic/image'
-import { findPhotoSize, resolvePaper } from '../logic/library'
+import { findPhotoSize, resolvePaper, sizeLabel, splitDistributionText, splitGroupsOf } from '../logic/library'
 import { buildPdf } from '../logic/pdf'
 import { buildSheetPng } from '../logic/png'
 import { formatCents, formatPercent } from '../logic/units'
@@ -51,6 +51,23 @@ function sizeLabelOf(p: Placement): string {
   return s ? `${s.name} ${s.wMm}x${s.hMm}` : `${p.w.toFixed(1)}x${p.h.toFixed(1)}`
 }
 
+/** 「不拆散」却被分到多张相纸的尺寸（从当前生效版面推导，与排样预览页一致） */
+const splitInfos = computed(() => {
+  const t = task.value
+  if (!t) return []
+  return splitGroupsOf(t, sheets.value).map((sg) => {
+    const item = t.items.find((i) => i.id === sg.itemId)
+    const size = item ? findPhotoSize(allSizes.value, item.sizeId) : undefined
+    return {
+      ...sg,
+      line: `${sizeLabel(size)}：共 ${sg.total} 张，分在 ${splitDistributionText(sg)}`,
+    }
+  })
+})
+const splitLines = computed(() => splitInfos.value.map((s) => s.line))
+const splitItemIds = computed(() => new Set(splitInfos.value.map((s) => s.itemId)))
+const isSplitItem = (itemId: string) => splitItemIds.value.has(itemId)
+
 function guard(): boolean {
   if (!task.value) return false
   if (!valid.value) {
@@ -75,6 +92,7 @@ async function exportPdf() {
       sheets: sheets.value,
       photoOf: photoResolver(),
       sizeLabelOf,
+      splitLines: splitLines.value,
       onProgress: (m) => (message.value = m),
     })
     downloadBlob(blob, `${task.value!.name}-1to1.pdf`)
@@ -135,13 +153,19 @@ async function exportAllPng() {
 
 function exportCutList() {
   if (!guard()) return
-  const rows = cutListRows(task.value!, paper.value, sheets.value, (seq) => {
-    for (const s of sheets.value) {
-      const p = s.placements.find((x) => x.seq === seq)
-      if (p) return sizeLabelOf(p)
-    }
-    return ''
-  })
+  const rows = cutListRows(
+    task.value!,
+    paper.value,
+    sheets.value,
+    (seq) => {
+      for (const s of sheets.value) {
+        const p = s.placements.find((x) => x.seq === seq)
+        if (p) return sizeLabelOf(p)
+      }
+      return ''
+    },
+    { lines: splitLines.value, itemIds: splitItemIds.value },
+  )
   downloadBlob(csvBlob(rows), `${task.value!.name}-切割清单.csv`)
   message.value = '切割清单 CSV 已导出'
 }
@@ -163,12 +187,21 @@ function exportCost() {
     ['不排样逐张打印成本（元）', (c.naiveTotalCents / 100).toFixed(2)],
     ['不排样逐张打印浪费率', formatPercent(c.naiveWasteRate)],
     ['节省（元）', (c.savedCents / 100).toFixed(2)],
-    [],
-    ['照片编号', '所在相纸', '尺寸', '宽 mm', '高 mm', '旋转'],
+    ['不拆散被拆散', splitLines.value.length ? `${splitLines.value.length} 种尺寸` : '无'],
   ]
+  for (const line of splitLines.value) rows.push(['被拆散明细', line])
+  rows.push([], ['照片编号', '所在相纸', '尺寸', '宽 mm', '高 mm', '旋转', '不拆散被拆散'])
   for (const s of sheets.value) {
     for (const p of s.placements) {
-      rows.push([p.seq, s.index + 1, sizeLabelOf(p), p.w, p.h, p.rotated ? '90°' : '无'])
+      rows.push([
+        p.seq,
+        s.index + 1,
+        sizeLabelOf(p),
+        p.w,
+        p.h,
+        p.rotated ? '90°' : '无',
+        splitItemIds.value.has(p.itemId) ? '是' : '否',
+      ])
     }
   }
   downloadBlob(csvBlob(rows), `${task.value!.name}-成本表.csv`)
@@ -198,6 +231,13 @@ function printView() {
     <div v-if="message" class="note no-print" :class="valid ? 'ok' : 'danger'">{{ message }}</div>
     <div v-if="!valid" class="note danger no-print">
       手工微调后的排样不满足 guillotine 贯通裁切，导出已停用：{{ task.manual?.message }}
+    </div>
+    <div v-if="splitInfos.length" class="note danger no-print">
+      <strong>「不拆散」被拆散：</strong>
+      <template v-for="(sg, i) in splitInfos" :key="sg.itemId">
+        {{ i ? '；' : '' }}{{ sg.line }}
+      </template>
+      。该信息已写入导出的成本表、切割清单与 PDF 清单页。
     </div>
 
     <div class="grid sidebar no-print">
@@ -264,6 +304,16 @@ function printView() {
             <dd>{{ formatPercent(cost.naiveWasteRate) }}</dd>
             <dt>对比逐张打印节省</dt>
             <dd>{{ formatCents(cost.savedCents) }}</dd>
+            <dt>不拆散被拆散</dt>
+            <dd>
+              <span v-if="!splitInfos.length" class="badge ok">无</span>
+              <span v-else class="badge danger">{{ splitInfos.length }} 种尺寸</span>
+            </dd>
+          </div>
+          <div v-if="splitInfos.length" class="note danger" style="margin-top: 8px">
+            <template v-for="(sg, i) in splitInfos" :key="sg.itemId">
+              {{ i ? '；' : '' }}{{ sg.line }}
+            </template>
           </div>
         </div>
       </div>
@@ -284,6 +334,7 @@ function printView() {
               :safe-edge-mm="task.safeEdgeMm"
               :scale="Math.max(0.5, Math.min(2.2, 700 / paper.wMm))"
               :thumb-of="thumbs"
+              :split-of="isSplitItem"
             />
           </div>
         </div>

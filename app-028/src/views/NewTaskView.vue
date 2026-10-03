@@ -42,6 +42,7 @@ const draft = reactive({
   kerfMm: settings.value.kerfMm,
   safeEdgeMm: settings.value.safeEdgeMm,
   allowRotate: settings.value.allowRotate,
+  strictKeepTogether: settings.value.strictKeepTogether,
   headerText: '',
   footerText: '',
 })
@@ -205,6 +206,7 @@ function submit() {
     kerfMm: draft.kerfMm,
     safeEdgeMm: draft.safeEdgeMm,
     allowRotate: draft.allowRotate,
+    strictKeepTogether: draft.strictKeepTogether,
     headerText: draft.headerText,
     footerText: draft.footerText,
   })
@@ -424,6 +426,17 @@ function taskPaperName(t: Task) {
               </tr>
             </tbody>
           </table>
+
+          <div class="row" style="margin-top: 8px">
+            <label class="check">
+              <input v-model="draft.strictKeepTogether" type="checkbox" />
+              <strong>强硬模式</strong>：勾选「不拆散」的尺寸一张都不许拆
+            </label>
+          </div>
+          <div class="note" style="margin-top: 4px">
+            不勾强硬模式时，「不拆散」只是尽量：排不下会悄悄分到多张相纸（排样预览与导出清单会标明）。
+            勾选后，整组排不下一张相纸就直接报错，说清哪种尺寸、还差多少张，并建议换纸。
+          </div>
 
           <div class="row" style="margin-top: 12px">
             <label class="field" style="max-width: 150px">
