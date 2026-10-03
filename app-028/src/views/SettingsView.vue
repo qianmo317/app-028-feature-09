@@ -65,6 +65,10 @@ function reset() {
             <input v-model="settings.allowRotate" type="checkbox" />
             默认允许整体旋转 90°
           </label>
+          <label class="check">
+            <input v-model="settings.strictKeepTogether" type="checkbox" />
+            默认开启「禁止拆散」强硬模式（同尺寸整组排不下就直接报错并建议换纸）
+          </label>
           <label class="field" style="max-width: 200px">
             默认位图导出 DPI
             <select v-model.number="settings.exportDpi">

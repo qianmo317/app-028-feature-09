@@ -57,6 +57,7 @@ export function optionsFromTask(task: Task, paper: Paper): PackOptions {
     gapMm: task.gapMm,
     kerfMm: task.kerfMm,
     allowRotate: task.allowRotate,
+    strictKeepTogether: task.strictKeepTogether,
   }
 }
 

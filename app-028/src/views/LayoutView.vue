@@ -11,12 +11,14 @@ import {
   makeThumbResolver,
   manualPlacementsOf,
   resetManual,
+  runPack,
   setManual,
   sheetsOf,
   photoVersion,
 } from '../store'
 import { comparePapers, computeCost } from '../logic/cost'
 import { findPhotoSize, groupsFromTask, resolvePaper, sizeLabel } from '../logic/library'
+import { collectSplits, splitItemIds } from '../logic/splits'
 import { formatCents, formatPercent } from '../logic/units'
 import type { PaperCompare } from '../logic/cost'
 import type { Placement, Task } from '../logic/types'
@@ -39,6 +41,33 @@ const totalPhotos = computed(() =>
 )
 const totalSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.cutSteps.length, 0))
 const rawSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.rawCutCount, 0))
+
+function sizeNameOf(itemId: string): string {
+  const t = task.value
+  if (!t) return '未知尺寸'
+  const item = t.items.find((i) => i.id === itemId)
+  return sizeLabel(item ? findPhotoSize(allSizes.value, item.sizeId) : undefined)
+}
+
+/** 哪些尺寸被拆散、各分到了哪几张纸（自动/手工结果统一从版面派生） */
+const splits = computed(() =>
+  task.value ? collectSplits(task.value, sheets.value, sizeNameOf) : [],
+)
+const splitIds = computed(() => splitItemIds(splits.value))
+const splitIdsOnSheet = computed(() => splitIds.value)
+
+function splitOf(itemId: string) {
+  return splits.value.find((s) => s.itemId === itemId)
+}
+
+const strictError = ref('')
+
+function repack() {
+  const t = task.value
+  if (!t) return
+  strictError.value = runPack(t) ?? ''
+  activeSheet.value = 0
+}
 
 const thumbs = computed(() => {
   void photoVersion.value
@@ -85,6 +114,7 @@ function runCompare() {
       gapMm: t.gapMm,
       kerfMm: t.kerfMm,
       allowRotate: t.allowRotate,
+      strictKeepTogether: t.strictKeepTogether,
     },
     allPapers.value.filter((x) => x.id !== 'proll152'),
     t.paperId,
@@ -276,12 +306,25 @@ watch(
       <span class="badge">{{ totalPhotos }} 张照片</span>
       <span class="badge">{{ sheets.length }} 张相纸</span>
       <span class="badge">{{ totalSteps }} 刀（未合并 {{ rawSteps }} 刀）</span>
+      <span v-if="splits.length" class="badge warn" title="同一种尺寸被排到了多张相纸上">
+        ⚠ {{ splits.length }} 种尺寸被拆散
+      </span>
+      <span v-if="task.strictKeepTogether" class="badge ok">禁止拆散</span>
       <div class="spacer"></div>
       <button class="btn" @click="goto('cut')">裁切步骤 →</button>
       <button class="btn primary" @click="goto('export')">导出 1:1 →</button>
     </div>
 
     <div v-if="localMsg" class="note">{{ localMsg }}</div>
+    <div v-if="strictError" class="note danger">
+      <strong>排样已中止：</strong>{{ strictError }}
+      <div class="row tight" style="margin-top: 6px">
+        <button class="btn small" @click="runCompare">试算其它相纸</button>
+        <button class="btn small" @click="task.strictKeepTogether = false; repack()">
+          取消「禁止拆散」，按尽量不拆散重排
+        </button>
+      </div>
+    </div>
     <div
       v-if="manual"
       class="note"
@@ -321,6 +364,7 @@ watch(
               draggable
               :show-cut-labels="true"
               :thumb-of="thumbs"
+              :split-item-ids="splitIdsOnSheet"
               @move="onMove"
               @moveend="onMoveEnd"
               @select="(seq) => (selectedSeq = seq)"
@@ -330,6 +374,7 @@ watch(
             <span><i style="background: #9aa6b4"></i>切割线</span>
             <span><i style="background: #6d7c8f"></i>照片边界</span>
             <span><i style="background: #c3ccd9"></i>安全边</span>
+            <span><i style="background: #c77700"></i>同尺寸被拆散</span>
             <span>↻ = 已旋转 90°</span>
           </div>
         </div>
@@ -344,10 +389,15 @@ watch(
                 <th class="num">位置 x/y mm</th>
                 <th class="num">宽×高 mm</th>
                 <th>旋转</th>
+                <th>同尺寸拆散</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="p in displaySheet?.placements ?? []" :key="p.seq">
+              <tr
+                v-for="p in displaySheet?.placements ?? []"
+                :key="p.seq"
+                :class="{ 'row-warn': splitIds.has(p.itemId) }"
+              >
                 <td class="num">#{{ p.seq }}</td>
                 <td>
                   {{
@@ -362,6 +412,15 @@ watch(
                 <td class="num">{{ p.x.toFixed(1) }} / {{ p.y.toFixed(1) }}</td>
                 <td class="num">{{ p.w.toFixed(1) }}×{{ p.h.toFixed(1) }}</td>
                 <td>{{ p.rotated ? '90°' : '—' }}</td>
+                <td>
+                  <template v-if="splitIds.has(p.itemId)">
+                    <span class="badge warn">
+                      是 ·
+                      第 {{ splitOf(p.itemId)?.sheetIndexes.map((i) => i + 1).join('、') }} 张
+                    </span>
+                  </template>
+                  <template v-else>—</template>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -389,6 +448,62 @@ watch(
             <dd>{{ totalSteps }}</dd>
             <dt>切割步数（未合并）</dt>
             <dd>{{ rawSteps }}</dd>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>
+            同尺寸拆散情况
+            <span v-if="splits.length" class="badge warn">{{ splits.length }} 种被拆散</span>
+            <span v-else class="badge ok">没有拆散</span>
+          </h3>
+          <div class="card-sub">
+            勾选过「不拆散」（或开启了严格模式）的尺寸，若被排到多张相纸上会全部列在这里
+          </div>
+          <div v-if="task.strictKeepTogether && splits.length" class="note danger">
+            当前处于「禁止拆散」强硬模式，但手工微调把下列尺寸挪到了多张纸上；自动排样本身不会产生此结果，
+            恢复自动排样即可消除。
+          </div>
+          <div v-if="!splits.length" class="note ok">
+            每种尺寸都完整排在同一张相纸上，无需跨纸凑数
+          </div>
+          <table v-else class="data">
+            <thead>
+              <tr>
+                <th>尺寸</th>
+                <th class="num">总数</th>
+                <th>被分到的相纸（各几张）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in splits" :key="s.itemId">
+                <td>{{ s.name }}</td>
+                <td class="num">{{ s.copies }}</td>
+                <td>
+                  <span class="badge warn">第 {{ s.sheetIndexes.map((i) => i + 1).join('、') }} 张</span>
+                  各 {{ s.perSheet.join('、') }} 张
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>不拆散策略</h3>
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="task.strictKeepTogether"
+              @change="task.strictKeepTogether = ($event.target as HTMLInputElement).checked; repack()"
+            />
+            <strong>禁止拆散（强硬模式）</strong>：同一种尺寸一张都不许拆
+          </label>
+          <div class="note danger" style="margin-top: 6px">
+            开启后，任何尺寸整组排不进一张相纸时<strong>直接报错中止</strong>（说清是哪种尺寸、还差几张、建议换哪种纸），
+            不会再悄悄另起一张纸蒙混过去。
+          </div>
+          <div v-if="!task.strictKeepTogether" class="note" style="margin-top: 6px">
+            关闭时按清单里的「不拆散」勾选尽量排在一起，实在放不下才另起一张纸，并在上方明示拆散情况。
           </div>
         </div>
 

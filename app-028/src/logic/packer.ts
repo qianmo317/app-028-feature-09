@@ -5,7 +5,14 @@
  */
 import { EPS, planSheetCuts, toCutSteps, type Rect } from './guillotine'
 import { round } from './units'
-import type { PackResult, PackStats, Placement, Sheet, WasteRect } from './types'
+import type {
+  KeepTogetherBreak,
+  PackResult,
+  PackStats,
+  Placement,
+  Sheet,
+  WasteRect,
+} from './types'
 
 export interface PackGroup {
   itemId: string
@@ -24,11 +31,27 @@ export interface PackOptions {
   gapMm: number
   kerfMm: number
   allowRotate: boolean
+  /** 强硬模式：同一种尺寸一张都不许拆；整组排不进一张纸就直接报错 */
+  strictKeepTogether?: boolean
+}
+
+/** 严格模式下「整组排不进一张纸」的结构化明细 */
+export interface StrictBreakDetail {
+  itemId: string
+  photoW: number
+  photoH: number
+  copies: number
+  /** 一张空白相纸实际能排下几张 */
+  maxPerSheet: number
+  /** 还差几张放不下 */
+  shortfall: number
 }
 
 export interface PackOutput {
   result: PackResult
   error?: string
+  /** 严格模式排不下时的结构化明细（供上层附上换纸建议） */
+  strictBreaks?: StrictBreakDetail[]
 }
 
 interface PlacedRaw {
@@ -52,8 +75,27 @@ export function emptyResult(elapsedMs = 0): PackResult {
     avgUtilization: 0,
     elapsedMs,
     keepTogetherBroken: [],
+    keepTogetherBreaks: [],
   }
   return { sheets: [], stats }
+}
+
+/**
+ * 一种尺寸在一张空白相纸上最多能排几张（与主排样同一套 best-fit + 整边切分模拟）。
+ * 用于严格模式报错时说清「还差多少放不下」与换纸建议。
+ */
+export function maxCopiesOnSheet(g: PackGroup, opts: PackOptions): number {
+  const region = usableRegion(opts)
+  if (!region) return 0
+  const m = (opts.kerfMm + opts.gapMm) / 2
+  let free: Rect[] = [{ ...region }]
+  let n = 0
+  while (true) {
+    const t = tryPlaceOne(free, g, opts, m)
+    if (!t) return n
+    free = t.free
+    n++
+  }
 }
 
 /** 由一组（可能被手工微调过的）照片矩形重建每张相纸的切割步骤与利用率 */
@@ -250,10 +292,12 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
     }
   }
   const m = (opts.kerfMm + opts.gapMm) / 2
+  const strict = opts.strictKeepTogether === true
 
+  // 严格模式：每一种尺寸都按「不拆散」对待（忽略单项上的勾选状态）
   const queue: PackGroup[] = groups
     .filter((g) => g.copies > 0)
-    .map((g) => ({ ...g }))
+    .map((g) => (strict ? { ...g, keepTogether: true } : { ...g }))
     .sort((a, b) => {
       const ma = Math.max(a.photoW, a.photoH)
       const mb = Math.max(b.photoW, b.photoH)
@@ -280,6 +324,39 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
     return {
       error: Array.from(new Set(oversize)).join('；') + '（可换更大的相纸，或调小安全边/纸边留白）',
       result: emptyResult(performance.now() - started),
+    }
+  }
+
+  // 严格模式预检查：每一种尺寸都必须能整组排进一张空白相纸
+  if (strict) {
+    const breaks: StrictBreakDetail[] = []
+    for (const g of queue) {
+      if (g.copies <= 1) continue
+      const maxPerSheet = maxCopiesOnSheet(g, opts)
+      if (maxPerSheet < g.copies) {
+        breaks.push({
+          itemId: g.itemId,
+          photoW: g.photoW,
+          photoH: g.photoH,
+          copies: g.copies,
+          maxPerSheet,
+          shortfall: g.copies - maxPerSheet,
+        })
+      }
+    }
+    if (breaks.length) {
+      const lines = breaks.map(
+        (b) =>
+          `${round(b.photoW, 1)}×${round(b.photoH, 1)}mm 共 ${b.copies} 张：一张纸最多排 ${b.maxPerSheet} 张，还差 ${b.shortfall} 张放不下`,
+      )
+      return {
+        error:
+          '已开启「禁止拆散」，但下列尺寸无法全部排进同一张相纸：' +
+          Array.from(new Set(lines)).join('；') +
+          '。请换更大的相纸（或减少该尺寸数量、调小安全边/隙距/纸边留白）。',
+        strictBreaks: breaks,
+        result: emptyResult(performance.now() - started),
+      }
     }
   }
 
@@ -319,6 +396,8 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
       }
       for (const g of queue) {
         if (g.copies <= 0) continue
+        // 严格模式下多副本组只能整组放置，绝不零拆到别的纸；预检已保证整组排得进一张空纸
+        if (strict && g.keepTogether && g.copies > 1) continue
         let t = tryPlaceOne(free, g, opts, m)
         while (t) {
           commit(t, g)
@@ -340,6 +419,7 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
   const rawPlacements: Placement[] = []
   let seq = 0
   const sheetOfItem = new Map<string, Set<number>>()
+  const sheetCountOfItem = new Map<string, Map<number, number>>()
   for (let s = 0; s < rawSheets.length; s++) {
     const raw = rawSheets[s]
     const ordered = raw.placements
@@ -366,16 +446,34 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
         sheetOfItem.set(p.itemId, set)
       }
       set.add(s)
+      let cnt = sheetCountOfItem.get(p.itemId)
+      if (!cnt) {
+        cnt = new Map()
+        sheetCountOfItem.set(p.itemId, cnt)
+      }
+      cnt.set(s, (cnt.get(s) ?? 0) + 1)
     }
   }
 
   const { sheets } = sheetsFromPlacements(rawPlacements, opts, rawSheets.length)
 
   const keepTogetherBroken: string[] = []
+  const keepTogetherBreaks: KeepTogetherBreak[] = []
   for (const g of groups) {
     if (!g.keepTogether || g.copies <= 1) continue
     const set = sheetOfItem.get(g.itemId)
-    if (set && set.size > 1) keepTogetherBroken.push(g.itemId)
+    if (set && set.size > 1) {
+      keepTogetherBroken.push(g.itemId)
+      const sheetIndexes = Array.from(set).sort((a, b) => a - b)
+      const cnt = sheetCountOfItem.get(g.itemId) ?? new Map<number, number>()
+      keepTogetherBreaks.push({
+        itemId: g.itemId,
+        copies: g.copies,
+        sheetCount: sheetIndexes.length,
+        sheetIndexes,
+        perSheet: sheetIndexes.map((i) => cnt.get(i) ?? 0),
+      })
+    }
   }
 
   const totalPhotos = sheets.reduce((acc, s) => acc + s.placements.length, 0)
@@ -387,6 +485,7 @@ export function pack(groups: PackGroup[], opts: PackOptions): PackOutput {
       totalUsed > 0 ? totalUsed / (sheets.length * opts.paperW * opts.paperH) : 0,
     elapsedMs: round(performance.now() - started, 2),
     keepTogetherBroken,
+    keepTogetherBreaks,
   }
   return { result: { sheets, stats } }
 }

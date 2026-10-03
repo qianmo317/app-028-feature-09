@@ -3,7 +3,7 @@
  */
 import { validateCutSequence, type CutLine, type Rect } from './guillotine'
 import { BUILTIN_PAPERS, BUILTIN_PHOTO_SIZES } from './library'
-import { pack, sheetsFromPlacements, usableRegion, type PackGroup, type PackOptions } from './packer'
+import { pack, maxCopiesOnSheet, sheetsFromPlacements, usableRegion, type PackGroup, type PackOptions } from './packer'
 import { buildPdf } from './pdf'
 import { MM_TO_PT, mmToPt, mmToPx, pxToMm } from './units'
 import type { Paper, Placement, Sheet } from './types'
@@ -370,6 +370,7 @@ async function assertExport1to1(): Promise<AssertionResult> {
     kerfMm: 0.5,
     safeEdgeMm: 3,
     allowRotate: false,
+    strictKeepTogether: false,
     headerText: '自检页眉',
     footerText: '2026-09-20',
     createdAt: 0,
@@ -482,6 +483,61 @@ function assertPerformance(): AssertionResult {
   }
 }
 
+/** ⑧ 禁止拆散（强硬模式）：排不下必须报错、报清尺寸与差额，且报错不给排样结果；放得下时一张不拆 */
+function assertStrictKeepTogether(): AssertionResult {
+  const t0 = performance.now()
+  const problems: string[] = []
+  const base: PackOptions = {
+    paperW: 100,
+    paperH: 100,
+    marginMm: 0,
+    safeEdgeMm: 0,
+    gapMm: 0,
+    kerfMm: 0,
+    allowRotate: false,
+  }
+  const g: PackGroup = { itemId: 'a', copies: 5, photoW: 50, photoH: 50, allowRotate: false, keepTogether: false }
+
+  // 一张纸只能放 4 张 50×50（2×2），要 5 张 -> 严格模式必须直接报错
+  const max = maxCopiesOnSheet(g, base)
+  if (max !== 4) problems.push(`50×50 在 100×100 纸上应最多放 4 张，试算为 ${max}`)
+  const fail = pack([g], { ...base, strictKeepTogether: true })
+  if (!fail.error) {
+    problems.push('严格模式整组放不下时必须报错，却返回了排样结果')
+  } else {
+    if (!/50(?:\.0)?×50(?:\.0)?mm/.test(fail.error) || !fail.error.includes('5')) {
+      problems.push(`报错没说清是哪种尺寸/数量：${fail.error}`)
+    }
+    if (!fail.error.includes('还差 1 张')) problems.push(`报错没说清还差几张：${fail.error}`)
+  }
+  if (fail.strictBreaks?.length !== 1 || fail.strictBreaks[0].shortfall !== 1) {
+    problems.push('结构化拆散明细不正确（应有 1 条、shortfall=1）')
+  }
+  if (fail.result.sheets.length !== 0) problems.push('报错时不应给出任何排样结果')
+
+  // 放得下时：所有尺寸都必须落在同一张纸上（即便没有逐项勾选 keepTogether）
+  const ok = pack([{ ...g, copies: 4 }, { itemId: 'b', copies: 2, photoW: 20, photoH: 20, allowRotate: false, keepTogether: false }], {
+    ...base,
+    strictKeepTogether: true,
+  })
+  if (ok.error) problems.push(`严格模式放得下时不应报错：${ok.error}`)
+  const onSheets = (itemId: string) => new Set(ok.result.sheets.flatMap((s) => s.placements.filter((p) => p.itemId === itemId).map((p) => p.sheetIndex))).size
+  if (onSheets('a') !== 1 || onSheets('b') !== 1) {
+    problems.push(`严格模式不应拆散任何尺寸（a 在 ${onSheets('a')} 张，b 在 ${onSheets('b')} 张）`)
+  }
+  if (ok.result.stats.keepTogetherBreaks.length !== 0) problems.push('严格模式成功时拆散明细应为空')
+
+  return {
+    id: 'strict',
+    title: '⑧ 禁止拆散：严格模式排不下直接报错（尺寸/差几张），放得下时一张不拆',
+    pass: problems.length === 0,
+    detail: problems.length
+      ? problems.join('；')
+      : `100×100 纸放 5 张 50×50：试算容量 4 张，正确报错「还差 1 张」且不产出版面；放得下的组合每个尺寸都只落在 1 张纸上`,
+    ms: Math.round(performance.now() - t0),
+  }
+}
+
 export async function runSelfTest(): Promise<AssertionResult[]> {
   const results: AssertionResult[] = []
   results.push(assertGuillotine())
@@ -489,6 +545,7 @@ export async function runSelfTest(): Promise<AssertionResult[]> {
   results.push(assertSafeEdgeAndKerf())
   results.push(assertUnits())
   results.push(assertCoEdgeMerge())
+  results.push(assertStrictKeepTogether())
   try {
     results.push(await assertExport1to1())
   } catch (e) {

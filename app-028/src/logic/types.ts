@@ -84,12 +84,28 @@ export interface WasteRect {
   h: number
 }
 
+/** 一种被拆散到多张相纸的尺寸（同一 itemId 的照片出现在多张纸上） */
+export interface KeepTogetherBreak {
+  itemId: string
+  /** 该尺寸照片总数 */
+  copies: number
+  /** 被分到了几张纸 */
+  sheetCount: number
+  /** 所在相纸的序号（0 基），按升序 */
+  sheetIndexes: number[]
+  /** 每张纸上各排了几张，与 sheetIndexes 对齐 */
+  perSheet: number[]
+}
+
 export interface PackStats {
   totalPhotos: number
   sheets: number
   avgUtilization: number
   elapsedMs: number
+  /** @deprecated 用 keepTogetherBreaks（保留给旧任务/旧代码读字段） */
   keepTogetherBroken: string[]
+  /** 哪些尺寸被拆散、各被分到了哪几张纸（各几张） */
+  keepTogetherBreaks: KeepTogetherBreak[]
 }
 
 export interface PackResult {
@@ -122,6 +138,8 @@ export interface Task {
   kerfMm: number
   safeEdgeMm: number
   allowRotate: boolean
+  /** 强硬选项：开启后同一种尺寸一张都不许拆；排不下直接报错，不允许另起一张纸 */
+  strictKeepTogether: boolean
   headerText: string
   footerText: string
   createdAt: number
@@ -152,6 +170,7 @@ export interface Settings {
   kerfMm: number
   safeEdgeMm: number
   allowRotate: boolean
+  strictKeepTogether: boolean
   exportDpi: number
 }
 

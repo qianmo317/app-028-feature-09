@@ -338,6 +338,9 @@ table.data th.num {
 table.data tr:hover td {
   background: #fbfcfe;
 }
+table.data tr.row-warn td {
+  background: rgba(230, 145, 20, 0.09);
+}
 
 /* ---------- 徽标 / 提示 ---------- */
 .badge {
@@ -478,6 +481,24 @@ table.data tr:hover td {
 .ph.invalid {
   border-color: var(--danger);
   background: rgba(198, 40, 40, 0.1);
+}
+.ph.split {
+  border-color: #c77700;
+  border-style: dashed;
+  border-width: 1.5px;
+  background: rgba(230, 145, 20, 0.12);
+}
+.ph .ph-split-flag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 8.5px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #fff;
+  background: #c77700;
+  border-radius: 0 0 0 3px;
+  padding: 0 3px;
 }
 .ph img {
   position: absolute;

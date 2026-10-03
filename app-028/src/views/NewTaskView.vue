@@ -42,6 +42,7 @@ const draft = reactive({
   kerfMm: settings.value.kerfMm,
   safeEdgeMm: settings.value.safeEdgeMm,
   allowRotate: settings.value.allowRotate,
+  strictKeepTogether: settings.value.strictKeepTogether,
   headerText: '',
   footerText: '',
 })
@@ -205,6 +206,7 @@ function submit() {
     kerfMm: draft.kerfMm,
     safeEdgeMm: draft.safeEdgeMm,
     allowRotate: draft.allowRotate,
+    strictKeepTogether: draft.strictKeepTogether,
     headerText: draft.headerText,
     footerText: draft.footerText,
   })
@@ -312,6 +314,17 @@ function taskPaperName(t: Task) {
               <input v-model="draft.allowRotate" type="checkbox" />
               允许整体旋转 90°（证件照建议关闭）
             </label>
+            <label class="check">
+              <input v-model="draft.strictKeepTogether" type="checkbox" />
+              <strong>禁止拆散同尺寸照片（强硬模式）</strong>
+            </label>
+            <div v-if="draft.strictKeepTogether" class="note danger">
+              开启后，只要有一种尺寸整组排不进一张相纸，就<strong>直接报错不排样</strong>，
+              并告诉你是哪种尺寸、一张纸最多放几张、还差几张、建议换哪种纸——绝不会默默另起一张纸。
+            </div>
+            <div v-else class="note">
+              关闭时按清单里各行的「不拆散」勾选尽量同纸；放不下才另起一张纸，并在排样页明示被拆散的尺寸与去向。
+            </div>
           </div>
         </div>
 

@@ -9,7 +9,7 @@ import {
   optionsFromTask,
   resolvePaper,
 } from './logic/library'
-import { pack, sheetsFromPlacements } from './logic/packer'
+import { pack, maxCopiesOnSheet, sheetsFromPlacements } from './logic/packer'
 import { loadJSON, saveJSON } from './logic/storage'
 import type {
   Leftover,
@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   kerfMm: 0.5,
   safeEdgeMm: 3,
   allowRotate: true,
+  strictKeepTogether: false,
   exportDpi: 300,
 }
 
@@ -129,6 +130,7 @@ export function createTask(partial: Partial<Task> = {}): Task {
     kerfMm: partial.kerfMm ?? settings.value.kerfMm,
     safeEdgeMm: partial.safeEdgeMm ?? settings.value.safeEdgeMm,
     allowRotate: partial.allowRotate ?? settings.value.allowRotate,
+    strictKeepTogether: partial.strictKeepTogether ?? settings.value.strictKeepTogether,
     headerText: partial.headerText ?? '',
     footerText: partial.footerText ?? '',
     createdAt: Date.now(),
@@ -145,6 +147,30 @@ export function touch(): void {
   tasks.value = tasks.value.slice()
 }
 
+/** 严格模式排不下时，试算哪些相纸能让每种尺寸一张不拆（每种只占一张纸） */
+export function fittingPaperSuggestions(task: Task): Array<{ name: string; detail: string }> {
+  const groups = groupsFromTask(task, allSizes.value)
+  if (!groups.length) return []
+  const baseOpts = optionsFromTask(task, resolvePaper(task, allPapers.value))
+  const out: Array<{ area: number; name: string; detail: string }> = []
+  for (const p of allPapers.value) {
+    if (p.kind === 'roll') continue
+    if (p.id === task.paperId) continue
+    const opts = { ...baseOpts, paperW: p.wMm, paperH: p.hMm, marginMm: p.marginMm }
+    const bad = groups
+      .filter((g) => g.copies > 1)
+      .map((g) => ({ g, n: maxCopiesOnSheet(g, opts) }))
+      .filter((x) => x.n < x.g.copies)
+    if (bad.length) continue
+    out.push({
+      area: p.wMm * p.hMm,
+      name: p.name,
+      detail: `${p.name}（${p.wMm}×${p.hMm}mm）`,
+    })
+  }
+  return out.sort((a, b) => a.area - b.area).slice(0, 3).map(({ name, detail }) => ({ name, detail }))
+}
+
 /** 执行排样；返回错误提示（无错误时返回 undefined） */
 export function runPack(task: Task): string | undefined {
   const paper = resolvePaper(task, allPapers.value)
@@ -155,7 +181,15 @@ export function runPack(task: Task): string | undefined {
   }
   const out = pack(groups, optionsFromTask(task, paper))
   if (out.error) {
-    task.result = undefined
+    // 已有可用版面时（如在排样页切换严格选项失败）保留旧版面，不把结果清空
+    if (!task.result) task.result = undefined
+    if (out.strictBreaks?.length) {
+      const suggestions = fittingPaperSuggestions(task)
+      const tip = suggestions.length
+        ? `可换：${suggestions.map((s) => s.detail).join('、')}`
+        : '内置相纸里没有能整张装下该尺寸的规格，请用更大的自定义相纸'
+      return `${out.error} 换纸建议：${tip}。`
+    }
     return out.error
   }
   task.result = out.result

@@ -213,6 +213,40 @@ async function buildInfoPage(input: PdfBuildInput): Promise<PageSpec> {
   lines.push(
     `隙距 ${input.task.gapMm}mm｜刀宽补偿 ${input.task.kerfMm}mm｜安全边 ${input.task.safeEdgeMm}mm｜共 ${input.sheets.length} 张相纸`,
   )
+  // 同尺寸拆散情况：哪些尺寸被分到了哪几张纸
+  const relevant = new Set(
+    input.task.items
+      .filter((it) => it.qty > 1 && (it.keepTogether || input.task.strictKeepTogether))
+      .map((it) => it.id),
+  )
+  if (relevant.size) {
+    const perItem = new Map<string, Map<number, number>>()
+    for (const s of input.sheets) {
+      for (const p of s.placements) {
+        if (!relevant.has(p.itemId)) continue
+        let mm = perItem.get(p.itemId)
+        if (!mm) {
+          mm = new Map()
+          perItem.set(p.itemId, mm)
+        }
+        mm.set(s.index, (mm.get(s.index) ?? 0) + 1)
+      }
+    }
+    const broken: string[] = []
+    for (const itemId of relevant) {
+      const mm = perItem.get(itemId)
+      if (!mm || mm.size <= 1) continue
+      const idxs = Array.from(mm.keys()).sort((a, b) => a - b)
+      const label = input.sizeLabelOf({ itemId } as Placement)
+      broken.push(
+        `${label}：分到第 ${idxs.map((i) => i + 1).join('、')} 张（各 ${idxs.map((i) => mm.get(i)).join('、')} 张）`,
+      )
+    }
+    if (broken.length) {
+      lines.push(`同尺寸拆散（${broken.length} 种，裁切后请跨纸凑齐）：`)
+      broken.forEach((b) => lines.push(`  ${b}`))
+    }
+  }
   lines.push('')
   for (const s of input.sheets) {
     lines.push(`【第 ${s.index + 1} 张】共 ${s.cutSteps.length} 刀（未合并 ${s.rawCutCount} 刀）`)

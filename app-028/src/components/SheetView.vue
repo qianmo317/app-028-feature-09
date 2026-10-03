@@ -22,6 +22,8 @@ const props = withDefaults(
     footerText?: string
     thumbOf?: (p: Placement) => string | undefined
     labelOf?: (itemId: string) => string
+    /** 被拆散到多张相纸的 itemId：这些照片用琥珀色描边提示 */
+    splitItemIds?: Set<string>
   }>(),
   {
     safeEdgeMm: 3,
@@ -40,6 +42,7 @@ const props = withDefaults(
     footerText: '',
     thumbOf: undefined,
     labelOf: undefined,
+    splitItemIds: undefined,
   },
 )
 
@@ -213,7 +216,12 @@ const showDetail = computed(() => props.scale >= 1.6 || props.unit === 'mm')
       v-for="p in sheet.placements"
       :key="p.seq"
       class="ph"
-      :class="{ draggable, invalid, dragging: dragSeq === p.seq }"
+      :class="{
+        draggable,
+        invalid,
+        dragging: dragSeq === p.seq,
+        split: splitItemIds?.has(p.itemId),
+      }"
       :style="phStyle(p)"
       @pointerdown="onPointerDown($event, p)"
       @pointermove="onPointerMove"
@@ -221,6 +229,7 @@ const showDetail = computed(() => props.scale >= 1.6 || props.unit === 'mm')
       @pointercancel="onPointerUp"
     >
       <img v-if="thumbOf && thumbOf(p)" :src="thumbOf(p)" alt="" draggable="false" />
+      <span v-if="splitItemIds?.has(p.itemId)" class="ph-split-flag">拆散</span>
       <template v-if="showNumbers">
         <span class="ph-no" :style="{ fontSize: textSm }">#{{ p.seq }}</span>
         <span v-if="showDetail" class="ph-dim" :style="{ fontSize: textXs }">

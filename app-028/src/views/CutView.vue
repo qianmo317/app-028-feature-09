@@ -3,8 +3,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SheetView from '../components/SheetView.vue'
 import RulerScale from '../components/RulerScale.vue'
-import { allPapers, getTask, makeThumbResolver, photoVersion, sheetsOf } from '../store'
-import { resolvePaper } from '../logic/library'
+import { allPapers, allSizes, getTask, makeThumbResolver, photoVersion, sheetsOf } from '../store'
+import { findPhotoSize, resolvePaper, sizeLabel } from '../logic/library'
+import { collectSplits, splitItemIds } from '../logic/splits'
 import type { CutStep, Task } from '../logic/types'
 
 const route = useRoute()
@@ -26,6 +27,20 @@ const thumbs = computed(() => {
   void photoVersion.value
   return task.value ? makeThumbResolver(task.value, sheets.value) : () => undefined
 })
+
+const splits = computed(() => {
+  const t = task.value
+  if (!t) return []
+  return collectSplits(
+    t,
+    sheets.value,
+    (itemId) => {
+      const item = t.items.find((i) => i.id === itemId)
+      return sizeLabel(item ? findPhotoSize(allSizes.value, item.sizeId) : undefined)
+    },
+  )
+})
+const splitIds = computed(() => splitItemIds(splits.value))
 
 const scale = computed(() => {
   const p = paper.value
@@ -83,6 +98,11 @@ onBeforeUnmount(() => {
 
 const allStepsText = computed(() => {
   const lines: string[] = []
+  if (splits.value.length) {
+    lines.push('【同尺寸拆散提醒】')
+    for (const s of splits.value) lines.push(`  ${s.name}：${s.summary}`)
+    lines.push('')
+  }
   for (const s of sheets.value) {
     lines.push(`【第 ${s.index + 1} 张相纸】${paper.value.wMm}×${paper.value.hMm}mm，共 ${s.cutSteps.length} 刀`)
     s.cutSteps.forEach((c, i) => {
@@ -115,6 +135,7 @@ function goto(routeName: string) {
       <span class="badge">
         本张 {{ totalSteps }} 刀（未合并 {{ sheet?.rawCutCount ?? 0 }} 刀）
       </span>
+      <span v-if="splits.length" class="badge warn">⚠ {{ splits.length }} 种尺寸被拆散</span>
       <div class="spacer"></div>
       <button class="btn" @click="goto('layout')">← 排样预览</button>
       <button class="btn" @click="printList">打印步骤清单</button>
@@ -154,8 +175,33 @@ function goto(routeName: string) {
               :done-count="step"
               :show-cut-labels="true"
               :thumb-of="thumbs"
+              :split-item-ids="splitIds"
             />
           </div>
+        </div>
+
+        <div v-if="splits.length" class="card">
+          <h3>同尺寸拆散提醒 <span class="badge warn">{{ splits.length }} 种</span></h3>
+          <div class="card-sub">下列尺寸被分到了多张相纸，裁切后注意按编号跨纸凑齐同尺寸</div>
+          <table class="data">
+            <thead>
+              <tr>
+                <th>尺寸</th>
+                <th class="num">总数</th>
+                <th>所在相纸（各几张）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in splits" :key="s.itemId">
+                <td>{{ s.name }}</td>
+                <td class="num">{{ s.copies }}</td>
+                <td>
+                  <span class="badge warn">第 {{ s.sheetIndexes.map((i) => i + 1).join('、') }} 张</span>
+                  各 {{ s.perSheet.join('、') }} 张
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
